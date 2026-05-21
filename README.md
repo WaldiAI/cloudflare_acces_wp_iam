@@ -72,6 +72,14 @@ wp-admins@example.com
 
 Use the exact group values Cloudflare returns in `get-identity`.
 
+When troubleshooting access or role mapping, validate the SAML assertion or OIDC identity data sent by the IdP before changing the WordPress plugin configuration. Different IdPs can expose group membership in different formats:
+
+- Microsoft Entra ID may send group Object IDs
+- Okta may send group names
+- Google Workspace SAML may send group names or group email-style values depending on the SAML app configuration
+
+For SAML-based IdPs, use a browser extension such as SAML-tracer for Chrome/Firefox to inspect the SAML Response and confirm the exact `groups` attribute values. Cloudflare Access policies and plugin role mappings must match the actual values sent by the IdP, not the display names assumed from the admin console.
+
 ## WordPress Configuration
 
 Configure the plugin under:

@@ -766,6 +766,70 @@ first_name
 last_name
 ```
 
+The most important value to verify is the group attribute. Do not assume that the group value in Cloudflare or WordPress should be the same as the display name visible in the IdP admin console.
+
+Common differences:
+
+```text
+Microsoft Entra ID:
+May send group Object IDs, for example:
+7dcf3b3f-b8a2-44c3-9937-b9c91ac6fc5e
+
+Okta:
+Often sends group names, for example:
+wp-admins
+wp-editors
+
+Google Workspace SAML:
+May send group names or email-style values depending on SAML app configuration, for example:
+wp-admins
+wp-admins@example.com
+```
+
+Recommended validation workflow:
+
+```text
+1. Reproduce the login with SAML-tracer enabled.
+2. Open the SAML Response.
+3. Find the AttributeStatement.
+4. Check the exact values under the groups attribute.
+5. Use those exact values in Cloudflare Access policies.
+6. Use those exact values in the WordPress plugin group-to-role mapping.
+7. Retest with a clean private/incognito session.
+```
+
+If the assertion sends:
+
+```text
+groups = wp-admins
+```
+
+then use:
+
+```text
+wp-admins
+```
+
+If the assertion sends:
+
+```text
+groups = wp-admins@example.com
+```
+
+then use:
+
+```text
+wp-admins@example.com
+```
+
+If Entra sends:
+
+```text
+groups = 7dcf3b3f-b8a2-44c3-9937-b9c91ac6fc5e
+```
+
+then use that Object ID.
+
 For WordPress/plugin debugging:
 
 ```text
