@@ -120,11 +120,11 @@ Group identifiers are stored as plain configuration values. They are not secrets
 
 ## Installation
 
-For WordPress installation, use the packaged ZIP from the GitHub Releases page. The release ZIP should include the PHP dependency files required for JWT validation.
+For WordPress installation, use the packaged ZIP from the GitHub Releases page.
 
-The repository keeps third-party PHP dependencies out of Git and declares them in `composer.json`. The WordPress-ready release ZIP includes the required `vendor/` files so the plugin can be installed without running Composer on the hosting server.
+The repository contains the same plugin structure used in the WordPress-ready ZIP, including the required `vendor/` files for JWT validation. This makes the project easy to review on GitHub and easy to package as an installable WordPress plugin.
 
-For source development:
+For dependency updates or source development:
 
 ```bash
 composer install --no-dev
@@ -145,14 +145,15 @@ The library is used for:
 
 This project does not use Google Firebase services. `firebase/php-jwt` is only a PHP JWT/JWKS library.
 
-Dependency metadata is declared in:
+Dependency source and metadata are included in:
 
 ```text
+vendor/firebase/php-jwt/
 composer.json
 THIRD_PARTY_NOTICES.md
 ```
 
-The GitHub repository contains source code and dependency declarations. The release ZIP contains the packaged WordPress plugin with the required dependency files included.
+The GitHub repository and the release ZIP both include the dependency files required for the plugin to run on a standard WordPress hosting environment without Composer.
 
 ## Fleet Automation
 
