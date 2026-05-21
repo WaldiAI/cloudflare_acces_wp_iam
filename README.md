@@ -1,5 +1,7 @@
 # Cloudflare Access WP IAM
 
+**Download WordPress plugin ZIP:** [Latest Release](https://github.com/WaldiAI/cloudflare_acces_wp_iam/releases/latest)
+
 Cloudflare Access WP IAM is a WordPress IAM/SSO gateway that uses Cloudflare Access as the policy enforcement layer for WordPress admin panels.
 
 The plugin does not integrate WordPress directly with SAML or OIDC. Instead, Okta, Google Workspace, Microsoft Entra ID, or another identity provider authenticates the user through Cloudflare Access. WordPress receives and validates Cloudflare's signed Access JWT, then creates or updates the local WordPress user just-in-time.
