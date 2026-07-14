@@ -16,6 +16,10 @@ User
 
 Cloudflare protects the WordPress admin entry points. WordPress does not integrate directly with SAML or OIDC. The WordPress plugin validates Cloudflare Access JWTs and maps identity provider groups to WordPress roles.
 
+![Detailed Cloudflare Access WP IAM authentication and lifecycle architecture](docs/assets/cloudflare-access-wp-iam-architecture-v2.png)
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the trust boundaries, protocol-level sequence, JWT/JWKS validation, JIT provisioning, role synchronization, logout semantics, and lifecycle limitations.
+
 ## 1. Add The Domain To Cloudflare
 
 Start in the main Cloudflare dashboard, not in Zero Trust.
@@ -232,9 +236,12 @@ For this WordPress plugin, the IdP type does not matter directly. Cloudflare aut
 The plugin needs Cloudflare to provide:
 
 ```text
-email
+verified email
+stable Cloudflare sub / user_uuid
 groups / group names / group IDs / group emails
 ```
+
+The plugin does not consume the IdP's SAML assertion or OIDC token directly. Cloudflare normalizes the upstream identity and issues the Access application JWT that WordPress validates.
 
 ## 7. Generic SAML Identity Provider
 
@@ -399,6 +406,8 @@ Signing certificate
 
 For Microsoft Entra ID, Cloudflare has a native Azure AD / Entra connector.
 
+The connector uses OpenID Connect authentication on top of OAuth 2.0. Enable PKCE for the Authorization Code flow. Cloudflare can use delegated Microsoft Graph permissions to resolve the user's group membership.
+
 Navigation:
 
 ```text
@@ -424,8 +433,11 @@ Directory ID:
 Support groups:
 On
 
+Proof Key for Code Exchange (PKCE):
+On
+
 Enable SCIM:
-Off for this basic setup
+Off (the WordPress plugin does not require SCIM)
 ```
 
 In Entra, the app registration redirect URI should be:
@@ -434,11 +446,37 @@ In Entra, the app registration redirect URI should be:
 https://<team>.cloudflareaccess.com/cdn-cgi/access/callback
 ```
 
+Register it as a **Web** redirect URI. In the Entra application overview, copy and label these values separately:
+
+```text
+Application (client) ID -> Cloudflare Application ID
+Directory (tenant) ID   -> Cloudflare Directory ID
+Object ID               -> inventory only; not the client ID
+```
+
+Create a client secret under **Certificates & secrets**. Copy the secret **Value** immediately; do not copy only its Secret ID. Store the value in a password manager and enter it only in the Cloudflare identity-provider form.
+
+Under **API permissions**, add these Microsoft Graph **Delegated permissions**:
+
+```text
+email
+offline_access
+openid
+profile
+User.Read
+Directory.Read.All
+GroupMember.Read.All
+```
+
+Grant tenant-wide administrator consent for the permissions that require it. This is the permission set tested and supported by Cloudflare for the Entra group integration. More narrowly scoped permissions require separate validation.
+
 If using Entra group IDs, Cloudflare policies and the WordPress plugin may need Object IDs such as:
 
 ```text
 7dcf3b3f-b8a2-44c3-9937-b9c91ac6fc5e
 ```
+
+This is the **group Object ID**, not the Entra application Object ID. Verify the exact group object returned by Cloudflare at `/cdn-cgi/access/get-identity` before finalizing the WordPress mapping.
 
 ## 11. Create A Cloudflare Access Application
 
@@ -507,14 +545,23 @@ Protect:
 wp-admin
 wp-login.php
 
-Usually do not protect directly:
+Review and test as authenticated entry points:
 wp-admin/admin-ajax.php
 wp-admin/admin-post.php
-wp-cron.php
 wp-json
+xmlrpc.php
+
+Usually keep public or protect with a separate machine policy:
+wp-cron.php
 ```
 
-For simple lab or controlled deployments, protecting `wp-admin` and `wp-login.php` is enough. For production WooCommerce, Elementor, forms, or frontend AJAX usage, test `admin-ajax.php` carefully before blocking it.
+Do not blindly place the complete `wp-json` namespace behind an interactive login because WordPress and plugins may expose intentional public REST routes. The plugin rejects authenticated REST requests by managed users unless it can validate an Access application token. Browser REST calls can use the `CF_Authorization` application cookie even when Cloudflare does not add the Access header on that path. Leave the Access Cookie Path setting disabled (domain-wide) when Gutenberg or another admin UI calls `/wp-json`.
+
+For WooCommerce, Elementor, forms, and front-end AJAX, test `admin-ajax.php` and `admin-post.php` routes individually. A custom endpoint that performs privileged work outside the standard WordPress routes must enforce equivalent authentication.
+
+### Protect the origin
+
+Path policies are not sufficient when the hosting origin is reachable directly. Prefer Cloudflare Tunnel so there is no public origin listener. Otherwise use authenticated origin pulls or carefully maintained firewall controls and verify that direct IP/alternate-host requests cannot reach WordPress administration. The plugin cannot repair an origin bypass before WordPress loads.
 
 ## 13. Create Access Policy
 
@@ -694,9 +741,17 @@ https://<team>.cloudflareaccess.com
 Audience:
 <Cloudflare Access AUD tag>
 
-Fallback role:
-Subscriber
+No mapped group:
+Deny access and remove managed roles
+
+Existing WordPress accounts:
+Do not link automatically
+
+Managed REST access:
+Enabled
 ```
+
+The plugin derives JWKS URL, issuer, and JWT header from the validated team domain. These fields are read-only to prevent arbitrary outbound identity or key requests.
 
 Group to role mapping:
 
@@ -709,6 +764,19 @@ wp-editors
 ```
 
 Use one group value per line. Use the exact values returned by Cloudflare identity context.
+
+The default production-safe settings are:
+
+```text
+No mapped group:          Deny access and remove managed roles
+Existing WP accounts:    Do not link automatically
+Managed REST access:     Enabled
+Logout mode:             Cloudflare logout through the application domain
+```
+
+After saving, check **Tools -> Site Health**. The plugin reports incomplete Cloudflare settings, missing role mappings, enabled account-linking mode, a pending version 1.x migration link, and disabled managed REST enforcement.
+
+For an upgrade from version 1.x, existing users do not yet have a Cloudflare subject binding. Version 2 allows one bootstrap link only when an already authenticated WordPress session matches the verified Cloudflare email and an explicit mapped group; this prevents the upgrading administrator from being locked out and consumes the bootstrap flag. Then temporarily enable one-time verified email linking only after checking exact emails and mappings, let other intended users sign in once, and disable linking again. Linking removes existing WordPress sessions and Application Passwords. Keep a separate unmanaged break-glass administrator outside this migration.
 
 ## 18. Test The Flow
 
@@ -733,6 +801,17 @@ WordPress admin URL
 -> JIT user creation or update
 -> WordPress admin access with mapped role
 ```
+
+Run the following acceptance tests before production rollout:
+
+1. A new user in a mapped group is created with exactly the expected role.
+2. A user with no mapped group is denied and is not created.
+3. An existing local account is not linked while linking mode is disabled.
+4. A controlled existing-account migration binds the expected email once, destroys old sessions and Application Passwords, and works after linking mode is disabled again.
+5. Moving a managed user to a lower mapped group updates the role and invalidates old WordPress sessions.
+6. Removing all mapped groups, followed by Cloudflare identity refresh/session revocation, removes managed roles and denies access.
+7. WordPress logout ends the WordPress and Cloudflare Access sessions, while an active IdP session can still perform SSO on the next visit.
+8. The unmanaged break-glass administrator still works through its deliberately protected recovery path.
 
 ## 19. Debug Cloudflare Access
 
@@ -765,6 +844,8 @@ groups
 first_name
 last_name
 ```
+
+SAML-tracer is useful only when the IdP-to-Cloudflare connection uses SAML. The native Microsoft Entra connector uses OIDC/OAuth 2.0, so diagnose it with Cloudflare Access logs, the Cloudflare identity test, browser network redirects, and the `get-identity` response instead of looking for a SAML assertion.
 
 The most important value to verify is the group attribute. Do not assume that the group value in Cloudflare or WordPress should be the same as the display name visible in the IdP admin console.
 
@@ -837,7 +918,10 @@ Check whether WordPress receives:
 Cf-Access-Jwt-Assertion
 
 Check Cloudflare get-identity response:
-https://<domain>/cdn-cgi/access/get-identity
+https://<team>.cloudflareaccess.com/cdn-cgi/access/get-identity
+
+Check WordPress:
+Settings -> Cloudflare Access WP IAM -> Recent IAM security events
 ```
 
 Important distinction:
@@ -847,6 +931,29 @@ JWT may not contain groups directly.
 Cloudflare get-identity usually contains groups.
 The plugin uses JWT for signed identity proof and get-identity for group context.
 ```
+
+After an IdP group change, refresh the Cloudflare identity before retesting:
+
+```text
+https://<team>.cloudflareaccess.com/cdn-cgi/access/refresh-identity
+```
+
+A confirmed identity response with no mapped group revokes the managed WordPress role and all sessions. A Cloudflare timeout or malformed response denies the request but is logged as an availability failure, not as an authoritative group removal.
+
+The plugin security log stores only bounded metadata. It does not store JWTs, cookies, email addresses, SAML assertions, client secrets, or API tokens. Useful diagnostic events include:
+
+```text
+access_token_rejected
+identity_lookup_failed
+access_denied_no_mapped_group
+jit_user_created
+user_bound_to_cloudflare
+role_changed
+managed_access_revoked
+wordpress_cloudflare_identity_mismatch
+```
+
+For `access_token_rejected`, the `error` detail distinguishes missing headers/cookies, invalid JWT shape or header encoding, wrong algorithm or key ID, unavailable JWKS, invalid signature, invalid time window, wrong issuer, wrong audience, and incomplete identity claims. These codes intentionally never contain the token value.
 
 ## 20. Common Problems
 
@@ -877,7 +984,17 @@ Wrong Issuer value
 Wrong JWKS URL
 Cloudflare Access is not protecting the path
 JWT header is not reaching WordPress/PHP
+Cloudflare identity email or subject does not match the signed JWT
+The identity has no group mapped to a WordPress role
 ```
+
+If Cloudflare logs show **Allowed**, the IdP and edge policy succeeded. Continue diagnosis in the plugin's **Recent IAM security events**. An Access `Allowed` result does not prove that WordPress accepted the application JWT or found a role mapping.
+
+### User is signed in again after WordPress logout
+
+This is expected when the upstream IdP session is still active. The default plugin logout ends the current WordPress session and redirects through the application-domain Cloudflare Access logout endpoint. It does not sign the user out of Entra ID, Microsoft 365, Okta, Google Workspace, or other IdP applications.
+
+On the next `/wp-admin` visit, Cloudflare starts authentication again and the IdP may complete SSO without prompting for a password. To revoke access rather than merely log out, remove the user from the authorized IdP group and revoke the active Cloudflare Access session.
 
 ### WordPress upload or forms show stale nonce
 
@@ -930,10 +1047,25 @@ MainWP or scripts can apply plugin settings at scale
 
 Cloudflare limits can change, so verify the current Access application and destination limits in Cloudflare documentation before designing a large fleet.
 
+The plugin provides JIT provisioning and access revocation, not SCIM deletion. For manual offboarding across a fleet:
+
+1. Remove the user from the WordPress access group in the IdP.
+2. Revoke the user's active Cloudflare Access session.
+3. Search for the email across child sites in MainWP.
+4. Remove the account or role according to retention policy and reassign authored content when required.
+5. Do not delete the MainWP connection user until the child site is connected with another administrator.
+
+This workflow deliberately separates immediate access revocation from destructive deletion of content ownership.
+
 ## References
 
-- Cloudflare DNS full setup and nameservers: https://developers.cloudflare.com/learning-paths/get-started/add-domain-to-cf/update-nameservers
+- Cloudflare DNS full setup and nameservers: https://developers.cloudflare.com/learning-paths/get-started/add-domain-to-cf/update-nameservers/
 - Cloudflare Access application types: https://developers.cloudflare.com/cloudflare-one/access-controls/applications/choose-application-type/
-- Cloudflare generic SAML identity provider: https://developers.cloudflare.com/cloudflare-one/identity/idp-integration/generic-saml/
-- Cloudflare Access JWT validation: https://developers.cloudflare.com/cloudflare-one/identity/authorization-cookie/validating-json/
+- Cloudflare generic SAML identity provider: https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/generic-saml/
+- Cloudflare Access application token and get-identity: https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/application-token/
+- Cloudflare Access JWT validation: https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/
+- Cloudflare authorization cookie settings: https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/
+- Cloudflare Microsoft Entra ID integration: https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/entra-id/
+- Cloudflare Access session management: https://developers.cloudflare.com/cloudflare-one/access-controls/access-settings/session-management/
 - Cloudflare account limits: https://developers.cloudflare.com/cloudflare-one/account-limits/
+- MainWP user management: https://docs.mainwp.com/sites/users/manage-users

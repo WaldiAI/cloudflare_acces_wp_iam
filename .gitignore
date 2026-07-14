@@ -1,3 +1,5 @@
-/composer.lock
 *.zip
 .DS_Store
+/.phpunit.cache/
+/vendor/autoload.php
+/vendor/composer/
