@@ -20,7 +20,10 @@
     "sort-packages": true
   },
   "scripts": {
-    "lint": "@php -l cloudflare-access-wp-iam.php && @php -l src/Plugin.php",
+    "lint": [
+      "@php -l cloudflare-access-wp-iam.php",
+      "@php -l src/Plugin.php"
+    ],
     "test": "phpunit"
   }
 }
